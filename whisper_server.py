@@ -53,6 +53,53 @@ WAV,然后把 WAV 路径 POST 到本服务,拿回带时间戳的 segments 再写
 """
 
 import os
+import sysconfig
+import glob
+import ctypes
+
+# ==========================================
+# 核心修复：自动定位并预加载 NVIDIA CUDA 库
+# ==========================================
+def preload_nvidia_libs():
+    # 获取当前虚拟环境的 site-packages 路径
+    site_packages = sysconfig.get_paths()['purelib']
+    
+    # 拼接出 nvidia 库的绝对路径
+    cublas_dir = os.path.join(site_packages, 'nvidia', 'cublas', 'lib')
+    cudnn_dir = os.path.join(site_packages, 'nvidia', 'cudnn', 'lib')
+    
+    # 1. 环境变量兜底（以防万一有些子进程需要）
+    nvidia_libs = f"{cublas_dir}:{cudnn_dir}"
+    os.environ["LD_LIBRARY_PATH"] = f"{nvidia_libs}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    
+    # 2. 强制把 .so 文件加载进内存 (核心大招)
+    # 使用 glob 匹配，防止因为具体小版本号不同（如 .12.9.2.10）导致找不到文件
+    libs_to_load = []
+    
+    # 查找 libcublas.so.12*
+    cublas_files = glob.glob(os.path.join(cublas_dir, "libcublas.so.12*"))
+    libs_to_load.extend(cublas_files)
+    
+    # 查找 cudnn 相关的 .so (可能有多个，如 libcudnn.so.9, libcudnn_ops.so.9 等)
+    cudnn_files = glob.glob(os.path.join(cudnn_dir, "libcudnn*.so.9*"))
+    libs_to_load.extend(cudnn_files)
+    
+    if not libs_to_load:
+        print("[警告] 未在虚拟环境中找到 NVIDIA .so 文件，请确认是否安装成功。")
+        return
+
+    for lib_path in libs_to_load:
+        try:
+            # 强制加载到内存
+            ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+            print(f"[预加载成功] {os.path.basename(lib_path)}")
+        except OSError as e:
+            print(f"[预加载失败] {lib_path}: {e}")
+
+# 执行预加载（放在所有其他 import 之前）
+preload_nvidia_libs()
+
+import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -64,12 +111,13 @@ from pydantic import BaseModel, Field
 # ==================== 关键参数 ====================
 SERVER_HOST = "127.0.0.1"          # 服务监听地址
 SERVER_PORT = 8000                 # 服务端口
-MODEL_NAME = "large-v3"            # Whisper 模型(默认 large-v3)
+MODEL_NAME = "/mnt/f/model"            # Whisper 模型(large-v3)
+# MODEL_NAME = "large-v3"            # Whisper 模型(默认 large-v3)
 DEVICE = "cuda"                    # 运行设备:cuda / cpu
 COMPUTE_TYPE = "float16"           # 计算精度:GPU 用 float16,CPU 可改 int8
 
 DEFAULT_LANGUAGE = "zh"            # 默认识别语言(ISO 码,中文为 zh);None 自动检测
-BATCH_SIZE = 8                     # BatchedInferencePipeline 批大小,显存不足时调小
+BATCH_SIZE = 16                    # BatchedInferencePipeline 批大小,显存不足时调小
 BEAM_SIZE = 5                      # beam search 大小
 TEMPERATURE = 0.0                  # 采样温度,0 表示贪婪解码
 VAD_FILTER = True                  # 是否开启 VAD 静音过滤(长音频强烈建议开启)
@@ -90,7 +138,8 @@ def load_model() -> None:
     global _model, _pipeline
     print(
         f"[启动] 加载 Faster-Whisper 模型 {MODEL_NAME} "
-        f"(device={DEVICE}, compute_type={COMPUTE_TYPE}) ..."
+        f"(device={DEVICE}, compute_type={COMPUTE_TYPE}) "
+        f"\nbatch_size={BATCH_SIZE}"
     )
     _model = WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
     _pipeline = BatchedInferencePipeline(model=_model)
@@ -200,6 +249,7 @@ def transcribe(req: TranscribeRequest) -> TranscribeResponse:
                 for index, segment in enumerate(segment_iter, start=1)
             ]
         except Exception as exc:  # 统一转成 HTTP 500,方便客户端定位
+            print(exc)
             raise HTTPException(status_code=500, detail=f"转录失败: {exc}") from exc
 
     text = "\n".join(segment.text for segment in segments if segment.text)
