@@ -238,6 +238,7 @@ def transcribe(req: TranscribeRequest) -> TranscribeResponse:
                 vad_parameters={"min_silence_duration_ms": VAD_MIN_SILENCE_MS},
                 condition_on_previous_text=req.condition_on_previous_text,
                 initial_prompt=req.initial_prompt,
+                without_timestamps=False,  # 关键：让模型输出时间戳 token
             )
             segments = [
                 Segment(
