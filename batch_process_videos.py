@@ -67,6 +67,14 @@ def main() -> None:
         sys.exit(1)
 
     directory = os.path.abspath(sys.argv[1])
+    # 获取最后一级目录名
+    last_dir_name = os.path.basename(directory)
+
+    # 判断并退出
+    if last_dir_name == "double-speed": # TODO: 添加过滤列表,作为默认参数
+        print(f"检测到目录名为 '{last_dir_name}'，跳过")
+        sys.exit(0)  # 0 表示正常退出（如果是异常拦截，可以填 1）
+
     model = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_MODEL
 
     # ---------- 收集文件 ----------
